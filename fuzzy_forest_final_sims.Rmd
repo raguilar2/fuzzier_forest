@@ -1,0 +1,1207 @@
+---
+title: "Untitled"
+output: pdf_document
+---
+
+
+```{r setup, include=FALSE}
+#path <- "E:/ms_report/"
+path <- "D:/Classes/ms_report/"
+#path <- "/Volumes/NO NAME/ms_report/"
+
+load(paste0(path, "results/lin_p100.Rdata"))
+load(paste0(path, "results/lin_p1000.Rdata"))
+load(paste0(path, "results/nonlin_n250.Rdata"))
+load(paste0(path, "results/nonlin_n500.Rdata"))
+source(paste0(path, 'fuzzy_forest_int_rem.R'))
+
+beta_int <- cbind(seq(3.7, 3.8, length.out = 20), seq(2.9, 3.1, length.out = 20))
+load(paste0(path, "v91i09-replication/SimulationStudy/VimSimulations/int_vims.RData"))
+beta_int_f <- c(beta_int[, 1][which.min(abs(30 - int_vims[, 1]))], beta_int[, 2][which.min(abs(30 - 
+  int_vims[, 2]))])
+
+cube_coef <- seq(0.995, 1.05, length.out = 20)
+load(paste0(path, "v91i09-replication/SimulationStudy/VimSimulations/cube_vims.RData"))
+cube_coef_f <- cube_coef[which.min(abs(30 - cube_vims))]
+
+beta <- c(1, beta_int_f, sqrt(15), cube_coef_f)
+beta_list <- c(beta[-2], beta[-3])
+
+# mean(eval(parse(text=paste0("c(1,2,3,4)"))))
+# generating random data
+library(faux)
+library(mvtnorm)
+
+# fuzzy forest packages
+library(fuzzyforest)
+library(WGCNA)
+library(randomForest)
+library(doParallel)
+
+# data viz and timing
+library(ggplot2)
+library(tictoc)
+
+selected <- function(vars, results, num_select){
+  count <- numeric(length(vars))
+  for (i in 1:length(results)) {
+    for (j in 1:length(vars)) {
+      count[j] <- count[j] + sum(vars[j] == results[[i]][1:num_select, 1])
+    }
+  }
+  count/length(results)
+}
+
+selected_ff_rem <- function(vars, results1, results2){
+  count <- numeric(length(vars))
+  for (i in 1:length(results1)) {
+    for (j in 1:length(vars)) {
+      count[j] <- count[j] + 
+        (any(vars[j] == results1[[i]][, 1]) | any(vars[j] == results1[[i]][, 1]))
+    }
+  }
+  count/length(results1)
+}
+
+nonlin <- function(x, beta_list){
+  x[1] + x[2] + beta_list[2]*x[1]*x[2] + beta_list[3]*x[3] + 
+    beta_list[4]*x[4]^3 + x[76] + x[77] + beta_list[6]*x[76]*x[77] +
+    beta_list[7]*x[78] + beta_list[8]*x[79]^3
+}
+
+nonlin_across <- function(x, beta_list){
+  x[1] + x[2] + beta_list[3]*x[3] + 
+    beta_list[4]*x[4]^3 + x[76] + x[77] + 
+    beta_list[7]*x[78] + beta_list[8]*x[79]^3 + x[3]*x[78]
+}
+
+nonlin_across_within <- function(x, beta_list){
+  x[1] + x[2] + beta_list[2]*x[1]*x[2] + beta_list[3]*x[3] + 
+    beta_list[4]*x[4]^3 + x[76] + x[77] + beta_list[6]*x[76]*x[77] +
+    beta_list[7]*x[78] + beta_list[8]*x[79]^3 + x[3]*x[78]
+}
+
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# 100 iterations, n = 100, lin, p = 100, normal
+
+```{r}
+mtry_factor <- 3#0.5
+drop_fraction <-  0.01
+number_selected <- 10
+keep_fraction <- 0.20 #0.05
+screen_params <- screen_control(drop_fraction = drop_fraction,
+                                keep_fraction = keep_fraction,
+                                mtry_factor = mtry_factor)
+select_params <- select_control(drop_fraction = drop_fraction,
+                                number_selected = number_selected,
+                                mtry_factor = mtry_factor)
+```
+
+
+```{r}
+set.seed(244)
+
+n <- 100
+cormat_sim <- cormat(0.8, 25)
+gammas <- rep(0, 100)
+gammas[c(1, 2, 76, 77)] <- 5
+gammas[c(3, 78)] <- 2
+
+results_lin_p100_ff_config1 <- list()
+results_lin_p100_ffwithin_config1 <- list()
+results_lin_p100_ffacross_config1 <- list()
+
+results_lin_p100_ffreminit_config1 <- list()
+results_lin_p100_ffremfinal_config1 <- list()
+
+results_lin_p100_ffwithinreminit_config1 <- list()
+results_lin_p100_ffwithinremfinal_config1 <- list()
+
+results_lin_p100_ffacrossreminit_config1 <- list()
+results_lin_p100_ffacrossremfinal_config1 <- list()
+
+results_lin_p100_rf_config1 <- list()
+
+tic()
+for (i in 1:100) {
+  all_modules <- lapply(1:3, function(j) rmvnorm(n, sigma = cormat_sim))
+  all_modules[[4]] <- matrix(rnorm(25 * n), nrow = n, ncol = 25)
+  rdata <- do.call(cbind, all_modules)
+  error <- rnorm(n, 0, 0.1)
+  y <- as.numeric(rdata%*%gammas + error)
+  x <- as.data.frame(rdata)
+  
+  # fuzzy forest
+  wff_sim <- wff_int_rem(x, y, screen_params = screen_params, 
+                 select_params = select_params,
+                 num_processors = 4)
+  results_lin_p100_ff_config1[[i]] <- wff_sim$feature_list
+  
+  # fuzzy forest, int within
+  wff_sim_within <- wff_int_rem(x, y, screen_params = screen_params, 
+                 select_params = select_params,
+                 num_processors = 4, interaction = TRUE, m = 2,
+                 three_way = FALSE, across = FALSE, r = 0)
+  results_lin_p100_ffwithin_config1[[i]] <- wff_sim_within$feature_list
+  
+  # fuzzy forest, int across
+  wff_sim_across <- wff_int_rem(x, y, screen_params = screen_params, 
+                 select_params = select_params,
+                 num_processors = 4, interaction = TRUE, m = 10,
+                 three_way = FALSE, across = TRUE, r = 0)
+  results_lin_p100_ffacross_config1[[i]] <- wff_sim_across$feature_list
+  
+  # fuzzy forest, rem
+  wff_sim_rem <- wff_int_rem(x, y, screen_params = screen_params, 
+                 select_params = select_params,
+                 num_processors = 4, interaction = FALSE, m = NULL,
+                 three_way = FALSE, across = FALSE, r = 6)
+  results_lin_p100_ffreminit_config1[[i]] <- wff_sim_rem$initial_feature_list
+  results_lin_p100_ffremfinal_config1[[i]] <- wff_sim_rem$feature_list
+  
+  # fuzzy forest, int within rem
+  wff_sim_withinrem <- wff_int_rem(x, y, screen_params = screen_params, 
+                 select_params = select_params,
+                 num_processors = 4, interaction = TRUE, m = 2,
+                 three_way = FALSE, across = FALSE, r = 6)
+  results_lin_p100_ffwithinreminit_config1[[i]] <- wff_sim_withinrem$initial_feature_list
+  results_lin_p100_ffwithinremfinal_config1[[i]] <- wff_sim_withinrem$feature_list
+  
+  # fuzzy forest, int across rem
+  wff_sim_acrossrem <- wff_int_rem(x, y, screen_params = screen_params, 
+                 select_params = select_params,
+                 num_processors = 4, interaction = TRUE, m = 10,
+                 three_way = FALSE, across = TRUE, r = 6)
+  results_lin_p100_ffacrossreminit_config1[[i]] <- wff_sim_acrossrem$initial_feature_list
+  results_lin_p100_ffacrossremfinal_config1[[i]] <- wff_sim_acrossrem$feature_list
+
+  # random forest
+  rf_sim <- randomForest(x, y, mtry = floor(100 * 1), ntree = 5000, importance = T) # mtry_factor
+  rf_vim <- importance(rf_sim, scale = FALSE, type = 1)
+  rf_vim <- data.frame(feature_name = row.names(rf_vim), 
+                       variable_importance = as.numeric(rf_vim[, 1]))
+  
+  results_lin_p100_rf_config1[[i]] <- rf_vim[order(rf_vim[, 2], decreasing = TRUE), ]
+}
+toc()
+```
+
+```{r} 
+imp_vars <- paste0("V",c(1:4, 76:79))
+methods <- c("Fuzzy Forest", "FF Within", "FF Across", "FF Rem", 
+             "FF Within Rem", "FF Across Rem", "Random Forest")
+percents_ff <- selected(imp_vars, results_lin_p100_ff_config1, 10)
+percents_ffwithin <- selected(imp_vars, results_lin_p100_ffwithin_config1, 10)
+percents_ffacross <- selected(imp_vars, results_lin_p100_ffacross_config1, 10)
+percents_ffrem <- selected_ff_rem(imp_vars, results_lin_p100_ffreminit_config1,
+                                  results_lin_p100_ffremfinal_config1)
+percents_ffwithinrem <- selected_ff_rem(imp_vars, results_lin_p100_ffwithinreminit_config1,
+                                  results_lin_p100_ffwithinremfinal_config1)
+percents_ffacrossrem <- selected_ff_rem(imp_vars, results_lin_p100_ffacrossreminit_config1,
+                                  results_lin_p100_ffacrossremfinal_config1)
+
+percents_rf <- selected(imp_vars, results_lin_p100_rf_config1, 10)
+
+setup_lin_p100_config1<- data.frame(Var = rep(1:length(imp_vars), length(methods)), 
+           perc = c(percents_ff, percents_ffwithin, percents_ffacross, 
+                    percents_ffrem, percents_ffwithinrem, percents_ffacrossrem,
+                    percents_rf), Method = rep(methods, each = length(imp_vars)))
+
+ggplot(setup_lin_p100_config1, aes(x = Var, y = perc, col = Method)) + geom_point(size = 3.2) + geom_line(size = 1.3) +
+  scale_x_continuous(breaks = 1:8,
+                   labels = c("X1", "X2", "X3", "X4",
+                              "X76", "X77", "X78", "X79")) +
+  xlab("Feature") + ylab("Proportion of Times Feature was Selected") +
+  ylim(0, 1) + ggtitle(TeX("Linear, n = 100, p = 100, $Y = 5X_1 + 5X_2 + 3X_3 + 5X_{76} + 5X_{77} + 3X_{78}$")) + 
+  theme_bw()
+```
+
+```{r, fig.height=10} 
+imp_vars <- paste0("V",1:100)
+methods <- c("Fuzzy Forest", "FF Within", "FF Across", "FF Rem", 
+             "FF Within Rem", "FF Across Rem", "Random Forest")
+percents_ff <- selected(imp_vars, results_lin_p100_ff_config1, 10)
+percents_ffwithin <- selected(imp_vars, results_lin_p100_ffwithin_config1, 10)
+percents_ffacross <- selected(imp_vars, results_lin_p100_ffacross_config1, 10)
+percents_ffrem <- selected_ff_rem(imp_vars, results_lin_p100_ffreminit_config1,
+                                  results_lin_p100_ffremfinal_config1)
+percents_ffwithinrem <- selected_ff_rem(imp_vars, results_lin_p100_ffwithinreminit_config1,
+                                  results_lin_p100_ffwithinremfinal_config1)
+percents_ffacrossrem <- selected_ff_rem(imp_vars, results_lin_p100_ffacrossreminit_config1,
+                                  results_lin_p100_ffacrossremfinal_config1)
+
+percents_rf <- selected(imp_vars, results_lin_p100_rf_config1, 10)
+
+setup_lin_p100_config1<- data.frame(Var = rep(1:length(imp_vars), length(methods)), 
+           perc = c(percents_ff, percents_ffwithin, percents_ffacross, 
+                    percents_ffrem, percents_ffwithinrem, percents_ffacrossrem,
+                    percents_rf), Method = rep(methods, each = length(imp_vars)))
+
+ggplot(setup_lin_p100_config1, aes(x = Var, y = perc, col = Method)) + geom_point(size = 3.2) + geom_line(size = 1.3) +
+  scale_x_continuous(breaks = 1:100,
+                   labels = paste0("X", 1:100)) +
+  xlab("Feature") + ylab("Proportion of Times Feature was Selected") +
+  ylim(0, 1) + coord_flip() +
+  theme_bw()
+```
+
+
+# 100 iterations, n = 100, lin, p = 1000, normal
+
+```{r}
+mtry_factor <- 0.5
+drop_fraction <- 0.01
+number_selected <- 10
+keep_fraction <- 0.05
+
+screen_params <- screen_control(drop_fraction = drop_fraction,
+                                keep_fraction = keep_fraction,
+                                mtry_factor = mtry_factor)
+select_params <- select_control(drop_fraction = drop_fraction,
+                                number_selected = number_selected,
+                                mtry_factor = mtry_factor)
+```
+
+
+```{r}
+set.seed(244)
+
+n <- 100
+cormat_sim <- cormat(0.8, 100)
+gammas <- rep(0, 1000)
+gammas[c(1, 2, 901, 902)] <- 5
+gammas[c(3, 903)] <- 2
+
+results_lin_p1000_ff_config1 <- list()
+results_lin_p1000_ffwithin_config1 <- list()
+results_lin_p1000_ffacross_config1 <- list()
+
+results_lin_p1000_ffreminit_config1 <- list()
+results_lin_p1000_ffremfinal_config1 <- list()
+
+results_lin_p1000_ffwithinreminit_config1 <- list()
+results_lin_p1000_ffwithinremfinal_config1 <- list()
+
+results_lin_p1000_ffacrossreminit_config1 <- list()
+results_lin_p1000_ffacrossremfinal_config1 <- list()
+
+results_lin_p1000_rf_config1 <- list()
+
+tic()
+for (i in 1:100) {
+  all_modules <- lapply(1:9, function(j) rmvnorm(n, sigma = cormat_sim))
+  all_modules[[10]] <- matrix(rnorm(100 * n), nrow = n, ncol = 100)
+  rdata <- do.call(cbind, all_modules)
+  error <- rnorm(n, 0, .1)
+  y <- as.numeric(rdata%*%gammas + error)
+  x <- as.data.frame(rdata)
+  
+  # fuzzy forest
+  wff_sim <- wff_int_rem(x, y, screen_params = screen_params, 
+                 select_params = select_params,
+                 num_processors = 4)
+  results_lin_p1000_ff_config1[[i]] <- wff_sim$feature_list
+  
+  # fuzzy forest, int within
+  wff_sim_within <- wff_int_rem(x, y, screen_params = screen_params, 
+                 select_params = select_params,
+                 num_processors = 4, interaction = TRUE, m = 2,
+                 three_way = FALSE, across = FALSE, r = 0)
+  results_lin_p1000_ffwithin_config1[[i]] <- wff_sim_within$feature_list
+  
+  # fuzzy forest, int across
+  wff_sim_across <- wff_int_rem(x, y, screen_params = screen_params, 
+                 select_params = select_params,
+                 num_processors = 4, interaction = TRUE, m = 10,
+                 three_way = FALSE, across = TRUE, r = 0)
+  results_lin_p1000_ffacross_config1[[i]] <- wff_sim_across$feature_list
+  
+  # fuzzy forest, rem
+  wff_sim_rem <- wff_int_rem(x, y, screen_params = screen_params, 
+                 select_params = select_params,
+                 num_processors = 4, interaction = FALSE, m = NULL,
+                 three_way = FALSE, across = FALSE, r = 6)
+  results_lin_p1000_ffreminit_config1[[i]] <- wff_sim_rem$initial_feature_list
+  results_lin_p1000_ffremfinal_config1[[i]] <- wff_sim_rem$feature_list
+  
+  # fuzzy forest, int within rem
+  wff_sim_withinrem <- wff_int_rem(x, y, screen_params = screen_params, 
+                 select_params = select_params,
+                 num_processors = 4, interaction = TRUE, m = 2,
+                 three_way = FALSE, across = FALSE, r = 6)
+  results_lin_p1000_ffwithinreminit_config1[[i]] <- wff_sim_withinrem$initial_feature_list
+  results_lin_p1000_ffwithinremfinal_config1[[i]] <- wff_sim_withinrem$feature_list
+  
+  # fuzzy forest, int across rem
+  wff_sim_acrossrem <- wff_int_rem(x, y, screen_params = screen_params, 
+                 select_params = select_params,
+                 num_processors = 4, interaction = TRUE, m = 10,
+                 three_way = FALSE, across = TRUE, r = 6)
+  results_lin_p1000_ffacrossreminit_config1[[i]] <- wff_sim_acrossrem$initial_feature_list
+  results_lin_p1000_ffacrossremfinal_config1[[i]] <- wff_sim_acrossrem$feature_list
+
+  
+  # random forest
+  rf_sim <- randomForest(x, y, mtry = floor(1000 * 1), ntree = 5000, importance = T) # mtry_factor
+  rf_vim <- importance(rf_sim, scale = FALSE, type = 1)
+  rf_vim <- data.frame(feature_name = row.names(rf_vim), 
+                       variable_importance = as.numeric(rf_vim[, 1]))
+  
+  results_lin_p1000_rf_config1[[i]] <- rf_vim[order(rf_vim[, 2], decreasing = TRUE), ]
+}
+toc()
+```
+
+```{r} 
+imp_vars <- paste0("V",c(1:4, 901:904))
+methods <- c("Fuzzy Forest", "FF Within", "FF Across", "FF Rem", 
+             "FF Within Rem", "FF Across Rem", "Random Forest")
+
+percents_ff <- selected(imp_vars, results_lin_p1000_ff_config1, 10)
+percents_ffwithin <- selected(imp_vars, results_lin_p1000_ffwithin_config1, 10)
+percents_ffacross <- selected(imp_vars, results_lin_p1000_ffacross_config1, 10)
+percents_ffrem <- selected_ff_rem(imp_vars, results_lin_p1000_ffreminit_config1,
+                                  results_lin_p1000_ffremfinal_config1)
+percents_ffwithinrem <- selected_ff_rem(imp_vars, results_lin_p1000_ffwithinreminit_config1,
+                                  results_lin_p1000_ffwithinremfinal_config1)
+percents_ffacrossrem <- selected_ff_rem(imp_vars, results_lin_p1000_ffacrossreminit_config1,
+                                  results_lin_p1000_ffacrossremfinal_config1)
+
+percents_rf <- selected(imp_vars, results_lin_p1000_rf_config1, 10)
+
+setup_lin_p1000_config1<- data.frame(Var = rep(1:length(imp_vars), length(methods)), 
+           perc = c(percents_ff, percents_ffwithin, percents_ffacross,  
+                    percents_ffrem, percents_ffwithinrem, percents_ffacrossrem,
+                    percents_rf), Method = rep(methods, each = length(imp_vars)))
+
+ggplot(setup_lin_p1000_config1, aes(x = Var, y = perc, col = Method)) + 
+  geom_point(size = 3.2) + geom_line(size = 1.3) +
+  scale_x_continuous(breaks = 1:8,
+                   labels = c("X1", "X2", "X3", "X4",
+                              "X901", "X902", "X903", "X904")) +
+  xlab("Feature") + ylab("Proportion of Times Feature was Selected") +
+  ylim(0, 1) +  ggtitle(TeX("Linear, n = 100, p = 1000, $Y = 5X_1 + 5X_2 + 3X_3 + 5X_{901} + 5X_{902} + 3X_{903}$")) +
+  theme_bw()
+```
+
+# 100 iterations, n = 250, non-lin, p = 100, normal
+
+```{r}
+mtry_factor <- 0.5
+drop_fraction <-  0.01
+number_selected <- 10
+keep_fraction <- 0.05
+
+screen_params <- screen_control(keep_fraction = 0.25, ntree_factor = 1, 
+                                mtry_factor = 15, min_ntree = 500)
+select_params <- select_control(number_selected = 10, drop_fraction = 0.1, 
+                                ntree_factor = 1, mtry_factor = 15, min_ntree = 500)
+```
+
+
+```{r}
+set.seed(244)
+
+n <- 250
+cormat_sim <- cormat(0.8, 25)
+
+results_nonlin_n250_ff_config1 <- list()
+results_nonlin_n250_ffwithin_config1 <- list()
+results_nonlin_n250_ffacross_config1 <- list()
+
+results_nonlin_n250_ffreminit_config1 <- list()
+results_nonlin_n250_ffremfinal_config1 <- list()
+
+results_nonlin_n250_ffwithinreminit_config1 <- list()
+results_nonlin_n250_ffwithinremfinal_config1 <- list()
+
+results_nonlin_n250_ffacrossreminit_config1 <- list()
+results_nonlin_n250_ffacrossremfinal_config1 <- list()
+
+results_nonlin_n250_rf_config1 <- list()
+
+tic()
+for (i in 1:100) {
+  all_modules <- lapply(1:3, function(j) rmvnorm(n, sigma = cormat_sim))
+  all_modules[[4]] <- matrix(rnorm(25 * n), nrow = n, ncol = 25)
+  rdata <- do.call(cbind, all_modules)
+  error <- rnorm(n, 0, 0.5)
+  y <- as.numeric(apply(rdata, 1, nonlin, 
+                        beta_list = beta_list) + error)
+  x <- as.data.frame(rdata)
+  
+  # fuzzy forest
+  wff_sim <- wff_int_rem(x, y, screen_params = screen_params, 
+                 select_params = select_params,
+                 num_processors = 4)
+  results_nonlin_n250_ff_config1[[i]] <- wff_sim$feature_list
+  
+  # fuzzy forest, int within
+  wff_sim_within <- wff_int_rem(x, y, screen_params = screen_params, 
+                 select_params = select_params,
+                 num_processors = 4, interaction = TRUE, m = 2,
+                 three_way = FALSE, across = FALSE, r = 0)
+  results_nonlin_n250_ffwithin_config1[[i]] <- wff_sim_within$feature_list
+  
+  # fuzzy forest, int across
+  wff_sim_across <- wff_int_rem(x, y, screen_params = screen_params, 
+                 select_params = select_params,
+                 num_processors = 4, interaction = TRUE, m = 10,
+                 three_way = FALSE, across = TRUE, r = 0)
+  results_nonlin_n250_ffacross_config1[[i]] <- wff_sim_across$feature_list
+  
+  # fuzzy forest, rem
+  wff_sim_rem <- wff_int_rem(x, y, screen_params = screen_params, 
+                 select_params = select_params,
+                 num_processors = 4, interaction = FALSE, m = NULL,
+                 three_way = FALSE, across = FALSE, r = 6)
+  results_nonlin_n250_ffreminit_config1[[i]] <- wff_sim_rem$initial_feature_list
+  results_nonlin_n250_ffremfinal_config1[[i]] <- wff_sim_rem$feature_list
+  
+  # fuzzy forest, int within rem
+  wff_sim_withinrem <- wff_int_rem(x, y, screen_params = screen_params, 
+                 select_params = select_params,
+                 num_processors = 4, interaction = TRUE, m = 2,
+                 three_way = FALSE, across = FALSE, r = 6)
+  results_nonlin_n250_ffwithinreminit_config1[[i]] <- wff_sim_withinrem$initial_feature_list
+  results_nonlin_n250_ffwithinremfinal_config1[[i]] <- wff_sim_withinrem$feature_list
+  
+  # fuzzy forest, int across rem
+  wff_sim_acrossrem <- wff_int_rem(x, y, screen_params = screen_params, 
+                 select_params = select_params,
+                 num_processors = 4, interaction = TRUE, m = 10,
+                 three_way = FALSE, across = TRUE, r = 6)
+  results_nonlin_n250_ffacrossreminit_config1[[i]] <- wff_sim_acrossrem$initial_feature_list
+  results_nonlin_n250_ffacrossremfinal_config1[[i]] <- wff_sim_acrossrem$feature_list
+
+  # random forest
+  rf_sim <- randomForest(x, y, mtry = 100, importance = TRUE) # ntree = 5000,
+  rf_vim <- importance(rf_sim, scale = FALSE, type = 1)
+  rf_vim <- data.frame(feature_name = row.names(rf_vim), 
+                      variable_importance = as.numeric(rf_vim[, 1]))
+  
+  results_nonlin_n250_rf_config1[[i]] <- rf_vim[order(rf_vim[, 2], decreasing = TRUE), ]
+}
+toc()
+```
+
+```{r} 
+imp_vars <- c(paste0("V",c(1:5, 76:80)), "V1xV2", "V76xV77")
+methods <- c("Fuzzy Forest", "FF Within", "FF Across", "FF Rem", 
+             "FF Within Rem", "FF Across Rem", "Random Forest")
+
+percents_ff <- selected(imp_vars, results_nonlin_n250_ff_config1, 10)
+percents_ffwithin <- selected(imp_vars, results_nonlin_n250_ffwithin_config1, 10)
+percents_ffacross <- selected(imp_vars, results_nonlin_n250_ffacross_config1, 10)
+percents_ffrem <- selected_ff_rem(imp_vars, results_nonlin_n250_ffreminit_config1,
+                                  results_nonlin_n250_ffremfinal_config1)
+percents_ffwithinrem <- selected_ff_rem(imp_vars, results_nonlin_n250_ffwithinreminit_config1,
+                                  results_nonlin_n250_ffwithinremfinal_config1)
+percents_ffacrossrem <- selected_ff_rem(imp_vars, results_nonlin_n250_ffacrossreminit_config1,
+                                  results_nonlin_n250_ffacrossremfinal_config1)
+
+percents_rf <- selected(imp_vars, results_nonlin_n250_rf_config1, 10)
+
+setup_nonlin_n250_config1<- data.frame(Var = rep(1:length(imp_vars), length(methods)), 
+           perc = c(percents_ff,  percents_ffwithin, percents_ffacross,  
+                    percents_ffrem, percents_ffwithinrem, percents_ffacrossrem,
+                    percents_rf), Method = rep(methods, each = length(imp_vars)))
+
+ggplot(setup_nonlin_n250_config1, aes(x = Var, y = perc, col = Method)) + 
+  geom_point(size = 3.2) + geom_line(size = 1.3) +
+  scale_x_continuous(breaks = 1:12,
+                   labels = c("X1", "X2", "X3", "X4", "X5",
+                              "X76", "X77", "X78", "X79", "X80", "X1xX2", "X76xX77")) +
+  xlab("Feature") + ylab("Proportion of Times Feature was Selected") +
+  ylim(0, 1) +  ggtitle(TeX("\\overset{Nonlinear, n = 250, p = 100,}{ $Y = X_1 + X_2 + 2.92X_1X_2 + \\sqrt{15}X_{3} + X_4^3 + X_{76} + X_{77} + 3.74X_{76}X_{77} + \\sqrt{15}X_{78} + X_{79}^3 $}")) +
+  theme_bw() + theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+```
+
+```{r, fig.height=10} 
+imp_vars <- c(paste0("V",1:100), "V1xV2", "V76xV77")
+methods <- c("Fuzzy Forest", "FF Within", "FF Across", "FF Rem", 
+             "FF Within Rem", "FF Across Rem", "Random Forest")
+
+percents_ff <- selected(imp_vars, results_nonlin_n250_ff_config1, 10)
+percents_ffwithin <- selected(imp_vars, results_nonlin_n250_ffwithin_config1, 10)
+percents_ffacross <- selected(imp_vars, results_nonlin_n250_ffacross_config1, 10)
+percents_ffrem <- selected_ff_rem(imp_vars, results_nonlin_n250_ffreminit_config1,
+                                  results_nonlin_n250_ffremfinal_config1)
+percents_ffwithinrem <- selected_ff_rem(imp_vars, results_nonlin_n250_ffwithinreminit_config1,
+                                  results_nonlin_n250_ffwithinremfinal_config1)
+percents_ffacrossrem <- selected_ff_rem(imp_vars, results_nonlin_n250_ffacrossreminit_config1,
+                                  results_nonlin_n250_ffacrossremfinal_config1)
+
+percents_rf <- selected(imp_vars, results_nonlin_n250_rf_config1, 10)
+
+setup_nonlin_n250_config1<- data.frame(Var = rep(1:length(imp_vars), length(methods)), 
+           perc = c(percents_ff,  percents_ffwithin, percents_ffacross,  
+                    percents_ffrem, percents_ffwithinrem, percents_ffacrossrem,
+                    percents_rf), Method = rep(methods, each = length(imp_vars)))
+
+ggplot(setup_nonlin_n250_config1, aes(x = Var, y = perc, col = Method)) + 
+  geom_point(size = 3.2) + geom_line(size = 1.3) +
+  scale_x_continuous(breaks = 1:102,
+                   labels =  c(paste0("X",1:100), "X1xX2", "X76xX77")) +
+  xlab("Feature") + ylab("Proportion of Times Feature was Selected") +
+  ylim(0, 1) + coord_flip() +
+  theme_bw()
+```
+
+# 100 iterations, n = 500, non-lin, p = 100, normal 
+
+```{r}
+mtry_factor <- 0.5
+drop_fraction <-  0.01
+number_selected <- 10
+keep_fraction <- 0.05
+
+screen_params <- screen_control(keep_fraction = 0.25, ntree_factor = 1,
+                                mtry_factor = 15, min_ntree = 500)
+select_params <- select_control(number_selected = 10, drop_fraction = 0.1, 
+                                ntree_factor = 1, mtry_factor = 15, min_ntree = 500)
+```
+
+
+```{r}
+set.seed(244)
+
+n <- 500
+cormat_sim <- cormat(0.8, 25)
+
+results_nonlin_n500_ff_config1 <- list()
+results_nonlin_n500_ffwithin_config1 <- list()
+results_nonlin_n500_ffacross_config1 <- list()
+
+results_nonlin_n500_ffreminit_config1 <- list()
+results_nonlin_n500_ffremfinal_config1 <- list()
+
+results_nonlin_n500_ffwithinreminit_config1 <- list()
+results_nonlin_n500_ffwithinremfinal_config1 <- list()
+
+results_nonlin_n500_ffacrossreminit_config1 <- list()
+results_nonlin_n500_ffacrossremfinal_config1 <- list()
+
+results_nonlin_n500_rf_config1 <- list()
+
+tic()
+for (i in 1:100) {
+  all_modules <- lapply(1:3, function(j) rmvnorm(n, sigma = cormat_sim))
+  all_modules[[4]] <- matrix(rnorm(25 * n), nrow = n, ncol = 25)
+  rdata <- do.call(cbind, all_modules)
+  error <- rnorm(n, 0, 0.5)
+  y <- as.numeric(apply(rdata, 1, nonlin, beta_list = beta_list) + error)
+  x <- as.data.frame(rdata)
+  
+  # fuzzy forest
+  wff_sim <- wff(x, y, screen_params = screen_params, 
+                 select_params = select_params,
+                 num_processors = 4)
+  results_nonlin_n500_ff_config1[[i]] <- wff_sim$feature_list
+  
+  # fuzzy forest, int within
+  wff_sim_within <- wff_int_rem(x, y, screen_params = screen_params, 
+                 select_params = select_params,
+                 num_processors = 4, interaction = TRUE, m = 2,
+                 three_way = FALSE, across = FALSE, r = 0)
+  results_nonlin_n500_ffwithin_config1[[i]] <- wff_sim_within$feature_list
+  
+  # fuzzy forest, int across
+  wff_sim_across <- wff_int_rem(x, y, screen_params = screen_params, 
+                 select_params = select_params,
+                 num_processors = 4, interaction = TRUE, m = 10,
+                 three_way = FALSE, across = TRUE, r = 0)
+  results_nonlin_n500_ffacross_config1[[i]] <- wff_sim_across$feature_list
+  
+  # fuzzy forest, rem
+  wff_sim_rem <- wff_int_rem(x, y, screen_params = screen_params, 
+                 select_params = select_params,
+                 num_processors = 4, interaction = FALSE, m = NULL,
+                 three_way = FALSE, across = FALSE, r = 6)
+  results_nonlin_n500_ffreminit_config1[[i]] <- wff_sim_rem$initial_feature_list
+  results_nonlin_n500_ffremfinal_config1[[i]] <- wff_sim_rem$feature_list
+  
+  # fuzzy forest, int within rem
+  wff_sim_withinrem <- wff_int_rem(x, y, screen_params = screen_params, 
+                 select_params = select_params,
+                 num_processors = 4, interaction = TRUE, m = 2,
+                 three_way = FALSE, across = FALSE, r = 6)
+  results_nonlin_n500_ffwithinreminit_config1[[i]] <- wff_sim_withinrem$initial_feature_list
+  results_nonlin_n500_ffwithinremfinal_config1[[i]] <- wff_sim_withinrem$feature_list
+  
+  # fuzzy forest, int across rem
+  wff_sim_acrossrem <- wff_int_rem(x, y, screen_params = screen_params, 
+                 select_params = select_params,
+                 num_processors = 4, interaction = TRUE, m = 10,
+                 three_way = FALSE, across = TRUE, r = 6)
+  results_nonlin_n500_ffacrossreminit_config1[[i]] <- wff_sim_acrossrem$initial_feature_list
+  results_nonlin_n500_ffacrossremfinal_config1[[i]] <- wff_sim_acrossrem$feature_list
+  
+  # random forest
+  rf_sim <- randomForest(x, y, mtry = 100, importance = TRUE) 
+  rf_vim <- importance(rf_sim, scale = FALSE, type = 1)
+  rf_vim <- data.frame(feature_name = row.names(rf_vim), 
+                      variable_importance = as.numeric(rf_vim[, 1]))
+  
+  results_nonlin_n500_rf_config1[[i]] <- rf_vim[order(rf_vim[, 2], decreasing = TRUE), ]
+}
+toc()
+```
+
+```{r} 
+imp_vars <- c(paste0("V",c(1:5, 76:80)), "V1xV2", "V76xV77")
+methods <- c("Fuzzy Forest", "FF Within", "FF Across", "FF Rem", 
+             "FF Within Rem", "FF Across Rem", "Random Forest")
+
+percents_ff <- selected(imp_vars, results_nonlin_n500_ff_config1, 10)
+percents_ffwithin <- selected(imp_vars, results_nonlin_n500_ffwithin_config1, 10)
+percents_ffacross <- selected(imp_vars, results_nonlin_n500_ffacross_config1, 10)
+percents_ffrem <- selected_ff_rem(imp_vars, results_nonlin_n500_ffreminit_config1,
+                                  results_nonlin_n500_ffremfinal_config1)
+percents_ffwithinrem <- selected_ff_rem(imp_vars, results_nonlin_n500_ffwithinreminit_config1,
+                                  results_nonlin_n500_ffwithinremfinal_config1)
+percents_ffacrossrem <- selected_ff_rem(imp_vars, results_nonlin_n500_ffacrossreminit_config1,
+                                  results_nonlin_n500_ffacrossremfinal_config1)
+
+percents_rf <- selected(imp_vars, results_nonlin_n500_rf_config1, 10)
+
+setup_nonlin_n500_config1<- data.frame(Var = rep(1:length(imp_vars), length(methods)), 
+           perc = c(percents_ff,   percents_ffwithin, percents_ffacross,  
+                    percents_ffrem, percents_ffwithinrem, percents_ffacrossrem,
+                    percents_rf), Method = rep(methods, each = length(imp_vars)))
+
+ggplot(setup_nonlin_n500_config1, aes(x = Var, y = perc, col = Method)) + 
+  geom_point(size = 3.2) + geom_line(size = 1.3) +
+  scale_x_continuous(breaks = 1:12,
+                   labels = c("X1", "X2", "X3", "X4", "X5",
+                              "X76", "X77", "X78", "X79", "X80", "X1xX2", "X76xX77")) +
+  xlab("Feature") + ylab("Proportion of Times Feature was Selected") +
+  ylim(0, 1) + ggtitle(TeX("\\overset{Nonlinear, n = 500, p = 100,}{ $Y = X_1 + X_2 + 2.92X_1X_2 + \\sqrt{15}X_{3} + X_4^3 + X_{76} + X_{77} + 3.74X_{76}X_{77} + \\sqrt{15}X_{78} + X_{79}^3 $}")) +
+  theme_bw() + theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+```
+
+```{r, fig.height=10} 
+imp_vars <- c(paste0("V", 1:100), "V1xV2", "V76xV77")
+methods <- c("Fuzzy Forest", "FF Within", "FF Across", "FF Rem", 
+             "FF Within Rem", "FF Across Rem", "Random Forest")
+
+percents_ff <- selected(imp_vars, results_nonlin_n500_ff_config1, 10)
+percents_ffwithin <- selected(imp_vars, results_nonlin_n500_ffwithin_config1, 10)
+percents_ffacross <- selected(imp_vars, results_nonlin_n500_ffacross_config1, 10)
+percents_ffrem <- selected_ff_rem(imp_vars, results_nonlin_n500_ffreminit_config1,
+                                  results_nonlin_n500_ffremfinal_config1)
+percents_ffwithinrem <- selected_ff_rem(imp_vars, results_nonlin_n500_ffwithinreminit_config1,
+                                  results_nonlin_n500_ffwithinremfinal_config1)
+percents_ffacrossrem <- selected_ff_rem(imp_vars, results_nonlin_n500_ffacrossreminit_config1,
+                                  results_nonlin_n500_ffacrossremfinal_config1)
+
+percents_rf <- selected(imp_vars, results_nonlin_n500_rf_config1, 10)
+
+setup_nonlin_n500_config1<- data.frame(Var = rep(1:length(imp_vars), length(methods)), 
+           perc = c(percents_ff,   percents_ffwithin, percents_ffacross,  
+                    percents_ffrem, percents_ffwithinrem, percents_ffacrossrem,
+                    percents_rf), Method = rep(methods, each = length(imp_vars)))
+
+ggplot(setup_nonlin_n500_config1, aes(x = Var, y = perc, col = Method)) + 
+  geom_point(size = 3.2) + geom_line(size = 1.3) +
+  scale_x_continuous(breaks = 1:102,
+                   labels = c(paste0("X",1:100), "X1xX2", "X76xX77")) +
+  xlab("Feature") + ylab("Proportion of Times Feature was Selected") +
+  ylim(0, 1) + coord_flip() +
+  theme_bw()
+```
+
+# 100 iterations, n = 250, non-lin, p = 100, across
+
+```{r}
+mtry_factor <- 0.5
+drop_fraction <-  0.01
+number_selected <- 10
+keep_fraction <- 0.05
+
+screen_params <- screen_control(keep_fraction = 0.25, ntree_factor = 1, 
+                                mtry_factor = 15, min_ntree = 500)
+select_params <- select_control(number_selected = 10, drop_fraction = 0.1, 
+                                ntree_factor = 1, mtry_factor = 15, min_ntree = 500)
+```
+
+
+```{r}
+set.seed(244)
+
+n <- 250
+cormat_sim <- cormat(0.8, 25)
+
+results_nonlinacross_n250_ff_config1 <- list()
+results_nonlinacross_n250_ffwithin_config1 <- list()
+results_nonlinacross_n250_ffacross_config1 <- list()
+
+results_nonlinacross_n250_ffreminit_config1 <- list()
+results_nonlinacross_n250_ffremfinal_config1 <- list()
+
+results_nonlinacross_n250_ffwithinreminit_config1 <- list()
+results_nonlinacross_n250_ffwithinremfinal_config1 <- list()
+
+results_nonlinacross_n250_ffacrossreminit_config1 <- list()
+results_nonlinacross_n250_ffacrossremfinal_config1 <- list()
+
+results_nonlinacross_n250_rf_config1 <- list()
+
+tic()
+for (i in 1:100) {
+  all_modules <- lapply(1:3, function(j) rmvnorm(n, sigma = cormat_sim))
+  all_modules[[4]] <- matrix(rnorm(25 * n), nrow = n, ncol = 25)
+  rdata <- do.call(cbind, all_modules)
+  error <- rnorm(n, 0, 0.5)
+  y <- as.numeric(apply(rdata, 1, nonlin_across, 
+                        beta_list = beta_list) + error)
+  x <- as.data.frame(rdata)
+  
+  # fuzzy forest
+  wff_sim <- wff_int_rem(x, y, screen_params = screen_params, 
+                 select_params = select_params,
+                 num_processors = 4)
+  results_nonlinacross_n250_ff_config1[[i]] <- wff_sim$feature_list
+  
+  # fuzzy forest, int within
+  wff_sim_within <- wff_int_rem(x, y, screen_params = screen_params, 
+                 select_params = select_params,
+                 num_processors = 4, interaction = TRUE, m = 3,
+                 three_way = FALSE, across = FALSE, r = 0)
+  results_nonlinacross_n250_ffwithin_config1[[i]] <- wff_sim_within$feature_list
+  
+  # fuzzy forest, int across
+  wff_sim_across <- wff_int_rem(x, y, screen_params = screen_params, 
+                 select_params = select_params,
+                 num_processors = 4, interaction = TRUE, m = 20,
+                 three_way = FALSE, across = TRUE, r = 0)
+  results_nonlinacross_n250_ffacross_config1[[i]] <- wff_sim_across$feature_list
+  
+  # fuzzy forest, rem
+  wff_sim_rem <- wff_int_rem(x, y, screen_params = screen_params, 
+                 select_params = select_params,
+                 num_processors = 4, interaction = FALSE, m = NULL,
+                 three_way = FALSE, across = FALSE, r = 6)
+  results_nonlinacross_n250_ffreminit_config1[[i]] <- wff_sim_rem$initial_feature_list
+  results_nonlinacross_n250_ffremfinal_config1[[i]] <- wff_sim_rem$feature_list
+  
+  # fuzzy forest, int within rem
+  wff_sim_withinrem <- wff_int_rem(x, y, screen_params = screen_params, 
+                 select_params = select_params,
+                 num_processors = 4, interaction = TRUE, m = 3,
+                 three_way = FALSE, across = FALSE, r = 6)
+  results_nonlinacross_n250_ffwithinreminit_config1[[i]] <- wff_sim_withinrem$initial_feature_list
+  results_nonlinacross_n250_ffwithinremfinal_config1[[i]] <- wff_sim_withinrem$feature_list
+  
+  # fuzzy forest, int across rem
+  wff_sim_acrossrem <- wff_int_rem(x, y, screen_params = screen_params, 
+                 select_params = select_params,
+                 num_processors = 4, interaction = TRUE, m = 20,
+                 three_way = FALSE, across = TRUE, r = 6)
+  results_nonlinacross_n250_ffacrossreminit_config1[[i]] <- wff_sim_acrossrem$initial_feature_list
+  results_nonlinacross_n250_ffacrossremfinal_config1[[i]] <- wff_sim_acrossrem$feature_list
+
+  # random forest
+  rf_sim <- randomForest(x, y, mtry = 100, importance = TRUE) # ntree = 5000,
+  rf_vim <- importance(rf_sim, scale = FALSE, type = 1)
+  rf_vim <- data.frame(feature_name = row.names(rf_vim), 
+                      variable_importance = as.numeric(rf_vim[, 1]))
+  
+  results_nonlinacross_n250_rf_config1[[i]] <- rf_vim[order(rf_vim[, 2], decreasing = TRUE), ]
+}
+toc()
+```
+
+```{r} 
+imp_vars <- c(paste0("V",c(1:5, 76:80)), "V1xV2", "V76xV77", "V3xV78")
+methods <- c("Fuzzy Forest", "FF Within", "FF Across", "FF Rem", 
+             "FF Within Rem", "FF Across Rem", "Random Forest")
+
+percents_ff <- selected(imp_vars, results_nonlinacross_n250_ff_config1, 10)
+percents_ffwithin <- selected(imp_vars, results_nonlinacross_n250_ffwithin_config1, 10)
+percents_ffacross <- selected(imp_vars, results_nonlinacross_n250_ffacross_config1, 10)
+percents_ffrem <- selected_ff_rem(imp_vars, results_nonlinacross_n250_ffreminit_config1,
+                                  results_nonlinacross_n250_ffremfinal_config1)
+percents_ffwithinrem <- selected_ff_rem(imp_vars, results_nonlinacross_n250_ffwithinreminit_config1,
+                                  results_nonlinacross_n250_ffwithinremfinal_config1)
+percents_ffacrossrem <- selected_ff_rem(imp_vars, results_nonlinacross_n250_ffacrossreminit_config1,
+                                  results_nonlinacross_n250_ffacrossremfinal_config1)
+
+percents_rf <- selected(imp_vars, results_nonlinacross_n250_rf_config1, 10)
+
+setup_nonlinacross_n250_config1<- data.frame(Var = rep(1:length(imp_vars), length(methods)), 
+           perc = c(percents_ff,  percents_ffwithin, percents_ffacross,  
+                    percents_ffrem, percents_ffwithinrem, percents_ffacrossrem,
+                    percents_rf), Method = rep(methods, each = length(imp_vars)))
+
+ggplot(setup_nonlinacross_n250_config1, aes(x = Var, y = perc, col = Method)) + 
+  geom_point(size = 3.2) + geom_line(size = 1.3) +
+  scale_x_continuous(breaks = 1:13,
+                   labels = c("X1", "X2", "X3", "X4", "X5",
+                              "X76", "X77", "X78", "X79", "X80", "X1xX2", "X76xX77", "X3xX78")) +
+  xlab("Feature") + ylab("Proportion of Times Feature was Selected") +
+  ylim(0, 1) + ggtitle(TeX("\\overset{Nonlinear, n = 250, p = 100,}{ $Y = X_1 + X_2 + \\sqrt{15}X_{3} + X_4^3 + X_{76} + X_{77} + \\sqrt{15}X_{78} + X_{79}^3 + X_{3}X_{78}$}")) +
+  theme_bw() + theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+```
+
+```{r, fig.height=10} 
+imp_vars <- c(paste0("V",1:100), "V1xV2", "V76xV77", "V3xV78")
+methods <- c("Fuzzy Forest", "FF Within", "FF Across", "FF Rem", 
+             "FF Within Rem", "FF Across Rem", "Random Forest")
+
+percents_ff <- selected(imp_vars, results_nonlinacross_n250_ff_config1, 10)
+percents_ffwithin <- selected(imp_vars, results_nonlinacross_n250_ffwithin_config1, 10)
+percents_ffacross <- selected(imp_vars, results_nonlinacross_n250_ffacross_config1, 10)
+percents_ffrem <- selected_ff_rem(imp_vars, results_nonlinacross_n250_ffreminit_config1,
+                                  results_nonlinacross_n250_ffremfinal_config1)
+percents_ffwithinrem <- selected_ff_rem(imp_vars, results_nonlinacross_n250_ffwithinreminit_config1,
+                                  results_nonlinacross_n250_ffwithinremfinal_config1)
+percents_ffacrossrem <- selected_ff_rem(imp_vars, results_nonlinacross_n250_ffacrossreminit_config1,
+                                  results_nonlinacross_n250_ffacrossremfinal_config1)
+
+percents_rf <- selected(imp_vars, results_nonlinacross_n250_rf_config1, 10)
+
+setup_nonlinacross_n250_config1<- data.frame(Var = rep(1:length(imp_vars), length(methods)), 
+           perc = c(percents_ff,  percents_ffwithin, percents_ffacross,  
+                    percents_ffrem, percents_ffwithinrem, percents_ffacrossrem,
+                    percents_rf), Method = rep(methods, each = length(imp_vars)))
+
+ggplot(setup_nonlinacross_n250_config1, aes(x = Var, y = perc, col = Method)) + 
+  geom_point(size = 3.2) + geom_line(size = 1.3) +
+  scale_x_continuous(breaks = 1:103,
+                   labels =  c(paste0("X",1:100), "X1xX2", "X76xX77", "X3xX78")) +
+  xlab("Feature") + ylab("Proportion of Times Feature was Selected") +
+  ylim(0, 1) + coord_flip() +
+  theme_bw()
+```
+
+# 100 iterations, n = 250, non-lin, p = 100, across within
+
+```{r}
+mtry_factor <- 0.5
+drop_fraction <-  0.01
+number_selected <- 10
+keep_fraction <- 0.05
+
+screen_params <- screen_control(keep_fraction = 0.25, ntree_factor = 1, 
+                                mtry_factor = 15, min_ntree = 500)
+select_params <- select_control(number_selected = 10, drop_fraction = 0.1, 
+                                ntree_factor = 1, mtry_factor = 15, min_ntree = 500)
+```
+
+
+```{r}
+set.seed(244)
+
+n <- 250
+cormat_sim <- cormat(0.8, 25)
+
+results_nonlinacrosswithin_n250_ff_config1 <- list()
+results_nonlinacrosswithin_n250_ffwithin_config1 <- list()
+results_nonlinacrosswithin_n250_ffacross_config1 <- list()
+
+results_nonlinacrosswithin_n250_ffreminit_config1 <- list()
+results_nonlinacrosswithin_n250_ffremfinal_config1 <- list()
+
+results_nonlinacrosswithin_n250_ffwithinreminit_config1 <- list()
+results_nonlinacrosswithin_n250_ffwithinremfinal_config1 <- list()
+
+results_nonlinacrosswithin_n250_ffacrossreminit_config1 <- list()
+results_nonlinacrosswithin_n250_ffacrossremfinal_config1 <- list()
+
+results_nonlinacrosswithin_n250_rf_config1 <- list()
+
+tic()
+for (i in 1:100) {
+  all_modules <- lapply(1:3, function(j) rmvnorm(n, sigma = cormat_sim))
+  all_modules[[4]] <- matrix(rnorm(25 * n), nrow = n, ncol = 25)
+  rdata <- do.call(cbind, all_modules)
+  error <- rnorm(n, 0, 0.5)
+  y <- as.numeric(apply(rdata, 1, nonlin_across_within, 
+                        beta_list = beta_list) + error)
+  x <- as.data.frame(rdata)
+  
+  # fuzzy forest
+  wff_sim <- wff_int_rem(x, y, screen_params = screen_params, 
+                 select_params = select_params,
+                 num_processors = 4)
+  results_nonlinacrosswithin_n250_ff_config1[[i]] <- wff_sim$feature_list
+  
+  # fuzzy forest, int within
+  wff_sim_within <- wff_int_rem(x, y, screen_params = screen_params, 
+                 select_params = select_params,
+                 num_processors = 4, interaction = TRUE, m = 3,
+                 three_way = FALSE, across = FALSE, r = 0)
+  results_nonlinacrosswithin_n250_ffwithin_config1[[i]] <- wff_sim_within$feature_list
+  
+  # fuzzy forest, int across
+  wff_sim_across <- wff_int_rem(x, y, screen_params = screen_params, 
+                 select_params = select_params,
+                 num_processors = 4, interaction = TRUE, m = 20,
+                 three_way = FALSE, across = TRUE, r = 0)
+  results_nonlinacrosswithin_n250_ffacross_config1[[i]] <- wff_sim_across$feature_list
+  
+  # fuzzy forest, rem
+  wff_sim_rem <- wff_int_rem(x, y, screen_params = screen_params, 
+                 select_params = select_params,
+                 num_processors = 4, interaction = FALSE, m = NULL,
+                 three_way = FALSE, across = FALSE, r = 6)
+  results_nonlinacrosswithin_n250_ffreminit_config1[[i]] <- wff_sim_rem$initial_feature_list
+  results_nonlinacrosswithin_n250_ffremfinal_config1[[i]] <- wff_sim_rem$feature_list
+  
+  # fuzzy forest, int within rem
+  wff_sim_withinrem <- wff_int_rem(x, y, screen_params = screen_params, 
+                 select_params = select_params,
+                 num_processors = 4, interaction = TRUE, m = 3,
+                 three_way = FALSE, across = FALSE, r = 6)
+  results_nonlinacrosswithin_n250_ffwithinreminit_config1[[i]] <- wff_sim_withinrem$initial_feature_list
+  results_nonlinacrosswithin_n250_ffwithinremfinal_config1[[i]] <- wff_sim_withinrem$feature_list
+  
+  # fuzzy forest, int across rem
+  wff_sim_acrossrem <- wff_int_rem(x, y, screen_params = screen_params, 
+                 select_params = select_params,
+                 num_processors = 4, interaction = TRUE, m = 20,
+                 three_way = FALSE, across = TRUE, r = 6)
+  results_nonlinacrosswithin_n250_ffacrossreminit_config1[[i]] <- wff_sim_acrossrem$initial_feature_list
+  results_nonlinacrosswithin_n250_ffacrossremfinal_config1[[i]] <- wff_sim_acrossrem$feature_list
+
+  # random forest
+  rf_sim <- randomForest(x, y, mtry = 100, importance = TRUE) # ntree = 5000,
+  rf_vim <- importance(rf_sim, scale = FALSE, type = 1)
+  rf_vim <- data.frame(feature_name = row.names(rf_vim), 
+                      variable_importance = as.numeric(rf_vim[, 1]))
+  
+  results_nonlinacrosswithin_n250_rf_config1[[i]] <- rf_vim[order(rf_vim[, 2], decreasing = TRUE), ]
+}
+toc()
+```
+
+```{r} 
+imp_vars <- c(paste0("V",c(1:5, 76:80)), "V1xV2", "V76xV77", "V3xV78")
+methods <- c("Fuzzy Forest", "FF Within", "FF Across", "FF Rem", 
+             "FF Within Rem", "FF Across Rem", "Random Forest")
+
+percents_ff <- selected(imp_vars, results_nonlinacrosswithin_n250_ff_config1, 10)
+percents_ffwithin <- selected(imp_vars, results_nonlinacrosswithin_n250_ffwithin_config1, 10)
+percents_ffacross <- selected(imp_vars, results_nonlinacrosswithin_n250_ffacross_config1, 10)
+percents_ffrem <- selected_ff_rem(imp_vars, results_nonlinacrosswithin_n250_ffreminit_config1,
+                                  results_nonlinacrosswithin_n250_ffremfinal_config1)
+percents_ffwithinrem <- selected_ff_rem(imp_vars, results_nonlinacrosswithin_n250_ffwithinreminit_config1,
+                                  results_nonlinacrosswithin_n250_ffwithinremfinal_config1)
+percents_ffacrossrem <- selected_ff_rem(imp_vars, results_nonlinacrosswithin_n250_ffacrossreminit_config1,
+                                  results_nonlinacrosswithin_n250_ffacrossremfinal_config1)
+
+percents_rf <- selected(imp_vars, results_nonlinacrosswithin_n250_rf_config1, 10)
+
+setup_nonlinacrosswithin_n250_config1<- data.frame(Var = rep(1:length(imp_vars), length(methods)), 
+           perc = c(percents_ff,  percents_ffwithin, percents_ffacross,  
+                    percents_ffrem, percents_ffwithinrem, percents_ffacrossrem,
+                    percents_rf), Method = rep(methods, each = length(imp_vars)))
+
+ggplot(setup_nonlinacrosswithin_n250_config1, aes(x = Var, y = perc, col = Method)) + 
+  geom_point(size = 3.2) + geom_line(size = 1.3) +
+  scale_x_continuous(breaks = 1:13,
+                   labels = c("X1", "X2", "X3", "X4", "X5",
+                              "X76", "X77", "X78", "X79", "X80", "X1xX2", "X76xX77", "X3xX78")) +
+  xlab("Feature") + ylab("Proportion of Times Feature was Selected") +
+  ylim(0, 1) + ggtitle(TeX("\\overset{Nonlinear, n = 250, p = 100,}{ $Y = X_1 + X_2 + 2.92X_1X_2 + \\sqrt{15}X_{3} + X_4^3 + X_{76} + X_{77} + 2.92X_{76}X_{77} + \\sqrt{15}X_{78} + X_{79}^3 + X_{3}X_{78}$}")) +
+  theme_bw() + theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+```
+
+```{r, fig.height=10} 
+imp_vars <- c(paste0("V",1:100), "V1xV2", "V76xV77", "V3xV78")
+methods <- c("Fuzzy Forest", "FF Within", "FF Across", "FF Rem", 
+             "FF Within Rem", "FF Across Rem", "Random Forest")
+
+percents_ff <- selected(imp_vars, results_nonlinacrosswithin_n250_ff_config1, 10)
+percents_ffwithin <- selected(imp_vars, results_nonlinacrosswithin_n250_ffwithin_config1, 10)
+percents_ffacross <- selected(imp_vars, results_nonlinacrosswithin_n250_ffacross_config1, 10)
+percents_ffrem <- selected_ff_rem(imp_vars, results_nonlinacrosswithin_n250_ffreminit_config1,
+                                  results_nonlinacrosswithin_n250_ffremfinal_config1)
+percents_ffwithinrem <- selected_ff_rem(imp_vars, results_nonlinacrosswithin_n250_ffwithinreminit_config1,
+                                  results_nonlinacrosswithin_n250_ffwithinremfinal_config1)
+percents_ffacrossrem <- selected_ff_rem(imp_vars, results_nonlinacrosswithin_n250_ffacrossreminit_config1,
+                                  results_nonlinacrosswithin_n250_ffacrossremfinal_config1)
+
+percents_rf <- selected(imp_vars, results_nonlinacrosswithin_n250_rf_config1, 10)
+
+setup_nonlinacrosswithin_n250_config1<- data.frame(Var = rep(1:length(imp_vars), length(methods)), 
+           perc = c(percents_ff,  percents_ffwithin, percents_ffacross,  
+                    percents_ffrem, percents_ffwithinrem, percents_ffacrossrem,
+                    percents_rf), Method = rep(methods, each = length(imp_vars)))
+
+ggplot(setup_nonlinacrosswithin_n250_config1, aes(x = Var, y = perc, col = Method)) + 
+  geom_point(size = 3.2) + geom_line(size = 1.3) +
+  scale_x_continuous(breaks = 1:103,
+                   labels =  c(paste0("X",1:100), "X1xX2", "X76xX77", "X3xX78")) +
+  xlab("Feature") + ylab("Proportion of Times Feature was Selected") +
+  ylim(0, 1) + coord_flip() +
+  theme_bw()
+```
+
+# 100 iterations, n = 250, non-lin, p = 100, across within
+############ increased num_selected ####################
+
+```{r}
+mtry_factor <- 0.5
+drop_fraction <-  0.01
+number_selected <- 15
+keep_fraction <- 0.05
+
+screen_params <- screen_control(keep_fraction = 0.25, ntree_factor = 1, 
+                                mtry_factor = 15, min_ntree = 500)
+select_params <- select_control(number_selected = 15, drop_fraction = 0.1, 
+                                ntree_factor = 1, mtry_factor = 15, min_ntree = 500)
+```
+
+
+```{r}
+set.seed(244)
+
+n <- 250
+cormat_sim <- cormat(0.8, 25)
+
+results_nonlinacrosswithin_n250_ff_config2 <- list()
+results_nonlinacrosswithin_n250_ffwithin_config2 <- list()
+results_nonlinacrosswithin_n250_ffacross_config2 <- list()
+
+results_nonlinacrosswithin_n250_ffreminit_config2 <- list()
+results_nonlinacrosswithin_n250_ffremfinal_config2 <- list()
+
+results_nonlinacrosswithin_n250_ffwithinreminit_config2 <- list()
+results_nonlinacrosswithin_n250_ffwithinremfinal_config2 <- list()
+
+results_nonlinacrosswithin_n250_ffacrossreminit_config2 <- list()
+results_nonlinacrosswithin_n250_ffacrossremfinal_config2 <- list()
+
+results_nonlinacrosswithin_n250_rf_config2 <- list()
+
+tic()
+for (i in 1:100) {
+  all_modules <- lapply(1:3, function(j) rmvnorm(n, sigma = cormat_sim))
+  all_modules[[4]] <- matrix(rnorm(25 * n), nrow = n, ncol = 25)
+  rdata <- do.call(cbind, all_modules)
+  error <- rnorm(n, 0, 0.5)
+  y <- as.numeric(apply(rdata, 1, nonlin_across_within, 
+                        beta_list = beta_list) + error)
+  x <- as.data.frame(rdata)
+  
+  # fuzzy forest
+  wff_sim <- wff_int_rem(x, y, screen_params = screen_params, 
+                 select_params = select_params,
+                 num_processors = 4)
+  results_nonlinacrosswithin_n250_ff_config2[[i]] <- wff_sim$feature_list
+  
+  # fuzzy forest, int within
+  wff_sim_within <- wff_int_rem(x, y, screen_params = screen_params, 
+                 select_params = select_params,
+                 num_processors = 4, interaction = TRUE, m = 3,
+                 three_way = FALSE, across = FALSE, r = 0)
+  results_nonlinacrosswithin_n250_ffwithin_config2[[i]] <- wff_sim_within$feature_list
+  
+  # fuzzy forest, int across
+  wff_sim_across <- wff_int_rem(x, y, screen_params = screen_params, 
+                 select_params = select_params,
+                 num_processors = 4, interaction = TRUE, m = 20,
+                 three_way = FALSE, across = TRUE, r = 0)
+  results_nonlinacrosswithin_n250_ffacross_config2[[i]] <- wff_sim_across$feature_list
+  
+  # fuzzy forest, rem
+  wff_sim_rem <- wff_int_rem(x, y, screen_params = screen_params, 
+                 select_params = select_params,
+                 num_processors = 4, interaction = FALSE, m = NULL,
+                 three_way = FALSE, across = FALSE, r = 6)
+  results_nonlinacrosswithin_n250_ffreminit_config2[[i]] <- wff_sim_rem$initial_feature_list
+  results_nonlinacrosswithin_n250_ffremfinal_config2[[i]] <- wff_sim_rem$feature_list
+  
+  # fuzzy forest, int within rem
+  wff_sim_withinrem <- wff_int_rem(x, y, screen_params = screen_params, 
+                 select_params = select_params,
+                 num_processors = 4, interaction = TRUE, m = 3,
+                 three_way = FALSE, across = FALSE, r = 6)
+  results_nonlinacrosswithin_n250_ffwithinreminit_config2[[i]] <- wff_sim_withinrem$initial_feature_list
+  results_nonlinacrosswithin_n250_ffwithinremfinal_config2[[i]] <- wff_sim_withinrem$feature_list
+  
+  # fuzzy forest, int across rem
+  wff_sim_acrossrem <- wff_int_rem(x, y, screen_params = screen_params, 
+                 select_params = select_params,
+                 num_processors = 4, interaction = TRUE, m = 20,
+                 three_way = FALSE, across = TRUE, r = 6)
+  results_nonlinacrosswithin_n250_ffacrossreminit_config2[[i]] <- wff_sim_acrossrem$initial_feature_list
+  results_nonlinacrosswithin_n250_ffacrossremfinal_config2[[i]] <- wff_sim_acrossrem$feature_list
+
+  # random forest
+  rf_sim <- randomForest(x, y, mtry = 100, importance = TRUE) # ntree = 5000,
+  rf_vim <- importance(rf_sim, scale = FALSE, type = 1)
+  rf_vim <- data.frame(feature_name = row.names(rf_vim), 
+                      variable_importance = as.numeric(rf_vim[, 1]))
+  
+  results_nonlinacrosswithin_n250_rf_config2[[i]] <- rf_vim[order(rf_vim[, 2], decreasing = TRUE), ]
+}
+toc()
+```
+
+```{r} 
+imp_vars <- c(paste0("V",c(1:5, 76:80)), "V1xV2", "V76xV77", "V3xV78")
+methods <- c("Fuzzy Forest", "FF Within", "FF Across", "FF Rem", 
+             "FF Within Rem", "FF Across Rem", "Random Forest")
+
+percents_ff <- selected(imp_vars, results_nonlinacrosswithin_n250_ff_config2, 10)
+percents_ffwithin <- selected(imp_vars, results_nonlinacrosswithin_n250_ffwithin_config2, 10)
+percents_ffacross <- selected(imp_vars, results_nonlinacrosswithin_n250_ffacross_config2, 10)
+percents_ffrem <- selected_ff_rem(imp_vars, results_nonlinacrosswithin_n250_ffreminit_config2,
+                                  results_nonlinacrosswithin_n250_ffremfinal_config2)
+percents_ffwithinrem <- selected_ff_rem(imp_vars, results_nonlinacrosswithin_n250_ffwithinreminit_config2,
+                                  results_nonlinacrosswithin_n250_ffwithinremfinal_config2)
+percents_ffacrossrem <- selected_ff_rem(imp_vars, results_nonlinacrosswithin_n250_ffacrossreminit_config2,
+                                  results_nonlinacrosswithin_n250_ffacrossremfinal_config2)
+
+percents_rf <- selected(imp_vars, results_nonlinacrosswithin_n250_rf_config2, 10)
+
+setup_nonlinacrosswithin_n250_config2<- data.frame(Var = rep(1:length(imp_vars), length(methods)), 
+           perc = c(percents_ff,  percents_ffwithin, percents_ffacross,  
+                    percents_ffrem, percents_ffwithinrem, percents_ffacrossrem,
+                    percents_rf), Method = rep(methods, each = length(imp_vars)))
+
+ggplot(setup_nonlinacrosswithin_n250_config2, aes(x = Var, y = perc, col = Method)) + 
+  geom_point(size = 3.2) + geom_line(size = 1.3) +
+  scale_x_continuous(breaks = 1:13,
+                   labels = c("X1", "X2", "X3", "X4", "X5",
+                              "X76", "X77", "X78", "X79", "X80", "X1xX2", "X76xX77", "X3xX78")) +
+  xlab("Feature") + ylab("Proportion of Times Feature was Selected") +
+  ylim(0, 1) +
+  theme_bw()
+```
+
+```{r, fig.height=10} 
+imp_vars <- c(paste0("V",1:100), "V1xV2", "V76xV77", "V3xV78")
+methods <- c("Fuzzy Forest", "FF Within", "FF Across", "FF Rem", 
+             "FF Within Rem", "FF Across Rem", "Random Forest")
+
+percents_ff <- selected(imp_vars, results_nonlinacrosswithin_n250_ff_config2, 15)
+percents_ffwithin <- selected(imp_vars, results_nonlinacrosswithin_n250_ffwithin_config2, 15)
+percents_ffacross <- selected(imp_vars, results_nonlinacrosswithin_n250_ffacross_config2, 15)
+percents_ffrem <- selected_ff_rem(imp_vars, results_nonlinacrosswithin_n250_ffreminit_config2,
+                                  results_nonlinacrosswithin_n250_ffremfinal_config2)
+percents_ffwithinrem <- selected_ff_rem(imp_vars, results_nonlinacrosswithin_n250_ffwithinreminit_config2,
+                                  results_nonlinacrosswithin_n250_ffwithinremfinal_config2)
+percents_ffacrossrem <- selected_ff_rem(imp_vars, results_nonlinacrosswithin_n250_ffacrossreminit_config2,
+                                  results_nonlinacrosswithin_n250_ffacrossremfinal_config2)
+
+percents_rf <- selected(imp_vars, results_nonlinacrosswithin_n250_rf_config2, 10)
+
+setup_nonlinacrosswithin_n250_config2<- data.frame(Var = rep(1:length(imp_vars), length(methods)), 
+           perc = c(percents_ff,  percents_ffwithin, percents_ffacross,  
+                    percents_ffrem, percents_ffwithinrem, percents_ffacrossrem,
+                    percents_rf), Method = rep(methods, each = length(imp_vars)))
+
+ggplot(setup_nonlinacrosswithin_n250_config2, aes(x = Var, y = perc, col = Method)) + 
+  geom_point(size = 3.2) + geom_line(size = 1.3) +
+  scale_x_continuous(breaks = 1:103,
+                   labels =  c(paste0("X",1:100), "X1xX2", "X76xX77", "X3xX78")) +
+  xlab("Feature") + ylab("Proportion of Times Feature was Selected") +
+  ylim(0, 1) + coord_flip() +
+  theme_bw()
+```
