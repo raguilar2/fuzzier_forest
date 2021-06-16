@@ -5,9 +5,7 @@ output: pdf_document
 
 
 ```{r setup, include=FALSE}
-#path <- "E:/ms_report/"
-path <- "D:/Classes/ms_report/"
-#path <- "/Volumes/NO NAME/ms_report/"
+path <- "./"
 
 load(paste0(path, "results/lin_p100.Rdata"))
 load(paste0(path, "results/lin_p1000.Rdata"))
@@ -41,6 +39,7 @@ library(doParallel)
 # data viz and timing
 library(ggplot2)
 library(tictoc)
+library(latex2exp)
 
 selected <- function(vars, results, num_select){
   count <- numeric(length(vars))

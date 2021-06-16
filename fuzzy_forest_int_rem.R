@@ -222,21 +222,23 @@ ff_int_rem <- function(X, y, Z=NULL, module_membership,
     X_surv <- cbind(X_surv, X_surv_int)
   }
   
-  if(interaction == TRUE & across == TRUE){
-    surv_list_prop <- lapply(survivor_list, vi_prop)
-    all_surv_list_prop <- do.call(rbind, surv_list_prop)
-    var_order <- all_surv_list_prop[order(all_surv_list_prop[, 4], -all_surv_list_prop[, 3]), 1]
-    X_surv_int <- interactions(X_surv, n = m, var_order = var_order, 
-                               three_way = three_way)
-    X_surv <- cbind(X_surv, X_surv_int)
-  }
-  
- # if(interaction == TRUE & across == TRUE){
-#    var_order <- survivors[order(survivors[, 2], decreasing = TRUE), 1]
+# testing scaling  
+#  if(interaction == TRUE & across == TRUE){
+#    surv_list_prop <- lapply(survivor_list, vi_prop)
+#    all_surv_list_prop <- do.call(rbind, surv_list_prop)
+#    var_order <- all_surv_list_prop[order(all_surv_list_prop[, 4], -all_surv_list_prop[, 3]), 1]
 #    X_surv_int <- interactions(X_surv, n = m, var_order = var_order, 
 #                               three_way = three_way)
 #    X_surv <- cbind(X_surv, X_surv_int)
 #  }
+ 
+#  original across mthods   
+  if(interaction == TRUE & across == TRUE){
+    var_order <- survivors[order(survivors[, 2], decreasing = TRUE), 1]
+    X_surv_int <- interactions(X_surv, n = m, var_order = var_order, 
+                               three_way = three_way)
+    X_surv <- cbind(X_surv, X_surv_int)
+  }
   
   if(!is.null(Z)) {
     X_surv <- cbind(X_surv, Z, stringsAsFactors=FALSE)

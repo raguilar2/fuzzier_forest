@@ -1,0 +1,10 @@
+# on a cluster of workstations with SGE, run "qsub doit.qsub" on the prompt.
+#!/bin/bash
+
+#$ -N JSS
+#$ -t 1:400
+#$ -tc 80
+#$ -o log
+#$ -j yes
+
+R --vanilla < code.R
